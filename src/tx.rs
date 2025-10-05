@@ -22,6 +22,10 @@ pub enum Transaction {
         client: ClientId,
         tx: TransactionId,
     },
+    Chargeback {
+        client: ClientId,
+        tx: TransactionId,
+    },
 }
 
 impl Transaction {
@@ -31,6 +35,7 @@ impl Transaction {
             Transaction::Withdrawal { tx, .. } => *tx,
             Transaction::Dispute { tx, .. } => *tx,
             Transaction::Resolve { tx, .. } => *tx,
+            Transaction::Chargeback { tx, .. } => *tx,
         }
     }
 
@@ -40,6 +45,7 @@ impl Transaction {
             Transaction::Withdrawal { client, .. } => *client,
             Transaction::Dispute { client, .. } => *client,
             Transaction::Resolve { client, .. } => *client,
+            Transaction::Chargeback { client, .. } => *client,
         }
     }
 }

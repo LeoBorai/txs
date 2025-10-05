@@ -2,24 +2,29 @@ use std::collections::{HashMap, HashSet};
 
 use thiserror::Error;
 
+use crate::ClientId;
 use crate::account::Account;
 use crate::tx::Transaction;
-use crate::{ClientId, TransactionId};
 
 pub type Result<T> = std::result::Result<T, LedgerError>;
 
 #[derive(Debug, Error)]
 pub enum LedgerError {
-    #[error("Account not found for client: {tx}")]
-    AccountNotFound { tx: TransactionId },
-    #[error("Insufficient funds to perform transaction: {tx}")]
-    InsufficientFunds { tx: TransactionId },
-    #[error("Transaction not found: {tx}")]
-    TransactionNotFound { tx: TransactionId },
-    #[error("Invalid Transaction for Dispute: {tx}")]
-    InvalidTransactionForDispute { tx: TransactionId },
-    #[error("Dispute Transaction not found: {tx}. No dispute in progress.")]
-    DisputeTxNotFound { tx: TransactionId },
+    #[error("Account not found for client: {tx:?}")]
+    AccountNotFound { tx: Transaction },
+    #[error("Insufficient funds to perform transaction: {tx:?}")]
+    InsufficientFunds { tx: Transaction },
+    #[error("Transaction not found: {tx:?}")]
+    TransactionNotFound { tx: Transaction },
+    #[error("Invalid Transaction for Dispute: {tx:?}")]
+    InvalidTransactionForDispute { tx: Transaction },
+    #[error("Dispute Transaction not found: {tx:?}. No dispute in progress.")]
+    DisputeTxNotFound { tx: Transaction },
+    #[error("Account {client_id}, is locked and cannot process transaction: {tx:?}")]
+    LockedAccount {
+        client_id: ClientId,
+        tx: Transaction,
+    },
 }
 
 pub struct Ledger {
@@ -63,6 +68,13 @@ impl Ledger {
             Transaction::Deposit { client, amount, .. } => {
                 let account = self.accounts.entry(client).or_default();
 
+                if account.locked {
+                    return Err(LedgerError::LockedAccount {
+                        client_id: client,
+                        tx,
+                    });
+                }
+
                 account.available += amount;
                 account.total += amount;
 
@@ -72,8 +84,15 @@ impl Ledger {
             }
             Transaction::Withdrawal { client, amount, .. } => {
                 let Some(account) = self.accounts.get_mut(&client) else {
-                    return Err(LedgerError::AccountNotFound { tx: tx.id() });
+                    return Err(LedgerError::AccountNotFound { tx });
                 };
+
+                if account.locked {
+                    return Err(LedgerError::LockedAccount {
+                        client_id: client,
+                        tx,
+                    });
+                }
 
                 if account.available >= amount {
                     account.available -= amount;
@@ -84,7 +103,7 @@ impl Ledger {
                     return Ok(());
                 }
 
-                Err(LedgerError::InsufficientFunds { tx: tx.id() })
+                Err(LedgerError::InsufficientFunds { tx })
             }
             Transaction::Dispute { client, tx: tx_id } => {
                 // use `cloned` to avoid lifetime issues with mutable borrow
@@ -99,26 +118,33 @@ impl Ledger {
                     })
                     .cloned()
                 else {
-                    return Err(LedgerError::TransactionNotFound { tx: tx_id });
-                };
-
-                let Some(account) = self.accounts.get_mut(&client) else {
-                    return Err(LedgerError::AccountNotFound { tx: tx_id });
+                    return Err(LedgerError::TransactionNotFound { tx });
                 };
 
                 let amount_disputed = match target_tx {
                     Transaction::Deposit { amount, .. } => amount,
                     Transaction::Withdrawal { amount, .. } => amount,
                     _ => {
-                        return Err(LedgerError::InvalidTransactionForDispute { tx: tx_id });
+                        return Err(LedgerError::InvalidTransactionForDispute { tx });
                     }
                 };
+
+                let Some(account) = self.accounts.get_mut(&client) else {
+                    return Err(LedgerError::AccountNotFound { tx });
+                };
+
+                if account.locked {
+                    return Err(LedgerError::LockedAccount {
+                        client_id: client,
+                        tx,
+                    });
+                }
 
                 if account.available >= amount_disputed {
                     account.available -= amount_disputed;
                     account.held += amount_disputed;
                 } else {
-                    return Err(LedgerError::InsufficientFunds { tx: tx_id });
+                    return Err(LedgerError::InsufficientFunds { tx });
                 }
 
                 self.tx_log.insert(tx);
@@ -129,6 +155,7 @@ impl Ledger {
                 client,
                 tx: tx_under_dispute_id,
             } => {
+                // check if the tx is under dispute
                 if self
                     .find_tx(|tx| {
                         tx.id() == tx_under_dispute_id
@@ -137,9 +164,7 @@ impl Ledger {
                     })
                     .is_none()
                 {
-                    return Err(LedgerError::DisputeTxNotFound {
-                        tx: tx_under_dispute_id,
-                    });
+                    return Err(LedgerError::DisputeTxNotFound { tx });
                 }
 
                 let Some(tx_under_dispute) = self
@@ -153,24 +178,26 @@ impl Ledger {
                     })
                     .cloned()
                 else {
-                    return Err(LedgerError::TransactionNotFound {
-                        tx: tx_under_dispute_id,
-                    });
+                    return Err(LedgerError::TransactionNotFound { tx });
                 };
 
+                // with both, dispute tx and actual tx found, proceed to resolve
                 let Some(account) = self.accounts.get_mut(&client) else {
-                    return Err(LedgerError::AccountNotFound {
-                        tx: tx_under_dispute_id,
-                    });
+                    return Err(LedgerError::AccountNotFound { tx });
                 };
+
+                if account.locked {
+                    return Err(LedgerError::LockedAccount {
+                        client_id: client,
+                        tx,
+                    });
+                }
 
                 let amount_resolved = match tx_under_dispute {
                     Transaction::Deposit { amount, .. } => amount,
                     Transaction::Withdrawal { amount, .. } => amount,
                     _ => {
-                        return Err(LedgerError::InvalidTransactionForDispute {
-                            tx: tx_under_dispute_id,
-                        });
+                        return Err(LedgerError::InvalidTransactionForDispute { tx });
                     }
                 };
 
@@ -178,17 +205,66 @@ impl Ledger {
                     account.held -= amount_resolved;
                     account.available += amount_resolved;
                 } else {
-                    return Err(LedgerError::InsufficientFunds {
-                        tx: tx_under_dispute_id,
-                    });
+                    return Err(LedgerError::InsufficientFunds { tx });
                 }
 
                 self.tx_log.insert(tx);
 
                 Ok(())
             }
-            _ => {
-                todo!()
+            Transaction::Chargeback {
+                client,
+                tx: tx_under_dispute_id,
+            } => {
+                if self
+                    .find_tx(|tx| {
+                        tx.id() == tx_under_dispute_id
+                            && tx.client_id() == client
+                            && matches!(tx, Transaction::Dispute { .. })
+                    })
+                    .is_none()
+                {
+                    return Err(LedgerError::DisputeTxNotFound { tx });
+                }
+
+                let Some(tx_under_dispute) = self
+                    .find_tx(|tx| {
+                        tx.id() == tx_under_dispute_id
+                            && tx.client_id() == client
+                            && matches!(tx, Transaction::Withdrawal { .. })
+                    })
+                    .cloned()
+                else {
+                    return Err(LedgerError::TransactionNotFound { tx });
+                };
+
+                let Some(account) = self.accounts.get_mut(&client) else {
+                    return Err(LedgerError::AccountNotFound { tx });
+                };
+
+                if account.locked {
+                    return Err(LedgerError::LockedAccount {
+                        client_id: client,
+                        tx,
+                    });
+                }
+
+                let amount_chargeback = match tx_under_dispute {
+                    Transaction::Withdrawal { amount, .. } => amount,
+                    _ => {
+                        return Err(LedgerError::InvalidTransactionForDispute { tx });
+                    }
+                };
+
+                if account.held >= amount_chargeback {
+                    account.held -= amount_chargeback;
+                    account.total -= amount_chargeback;
+                    account.locked = true;
+                } else {
+                    return Err(LedgerError::InsufficientFunds { tx });
+                }
+
+                Ok(())
             }
         }
     }
@@ -227,6 +303,32 @@ mod tests {
     }
 
     #[test]
+    fn process_tx_deposit_withdrawal() -> Result<()> {
+        let mut ledger = Ledger::new();
+
+        ledger.process_tx(Transaction::Deposit {
+            amount: dec!(100.0),
+            client: 1,
+            tx: 1,
+        })?;
+
+        ledger.process_tx(Transaction::Withdrawal {
+            amount: dec!(100.0),
+            client: 1,
+            tx: 2,
+        })?;
+
+        let account = ledger
+            .get_account(&1)
+            .expect("expected account for client.");
+
+        assert_eq!(account.available, dec!(0.0));
+        assert_eq!(ledger.tx_log.len(), 2);
+
+        Ok(())
+    }
+
+    #[test]
     fn process_tx_withdrawal_handles_insufficient_funds() -> Result<()> {
         let mut ledger = Ledger::new();
 
@@ -236,16 +338,17 @@ mod tests {
             tx: 1,
         })?;
 
-        let result = ledger.process_tx(Transaction::Withdrawal {
+        let tx = Transaction::Withdrawal {
             amount: dec!(3.0),
             client: 2,
             tx: 2,
-        });
+        };
+        let result = ledger.process_tx(tx.clone());
 
         assert!(result.is_err());
         assert!(matches!(
             result,
-            Err(LedgerError::InsufficientFunds { tx: 2 })
+            Err(LedgerError::InsufficientFunds { tx: _ })
         ));
 
         let account = ledger
@@ -360,12 +463,13 @@ mod tests {
             tx: 1,
         });
 
-        let result = ledger.process_tx(Transaction::Dispute { client: 1, tx: 3 });
+        let tx = Transaction::Dispute { client: 1, tx: 3 };
+        let result = ledger.process_tx(tx.clone());
 
         assert!(result.is_err());
         assert!(matches!(
             result,
-            Err(LedgerError::TransactionNotFound { tx: 3 })
+            Err(LedgerError::TransactionNotFound { tx: _ })
         ));
 
         let account = ledger
@@ -402,6 +506,39 @@ mod tests {
         assert_eq!(account.held, dec!(0.0));
         assert_eq!(account.total, dec!(10.0));
         assert_eq!(ledger.tx_log.len(), 3);
+
+        Ok(())
+    }
+
+    #[test]
+    fn process_tx_dispute_chargeback() -> Result<()> {
+        let mut ledger = Ledger::new();
+
+        ledger.process_tx(Transaction::Deposit {
+            amount: dec!(100.0),
+            client: 1,
+            tx: 1,
+        })?;
+
+        ledger.process_tx(Transaction::Withdrawal {
+            amount: dec!(100.0),
+            client: 1,
+            tx: 2,
+        })?;
+
+        ledger.process_tx(Transaction::Dispute { client: 1, tx: 2 })?;
+
+        ledger.process_tx(Transaction::Chargeback { client: 1, tx: 2 })?;
+
+        let account = ledger
+            .get_account(&1)
+            .expect("expected account for client.");
+
+        assert!(account.locked);
+        assert_eq!(account.available, dec!(0.0));
+        assert_eq!(account.held, dec!(0.0));
+        assert_eq!(account.total, dec!(0.0));
+        assert_eq!(ledger.tx_log.len(), 4);
 
         Ok(())
     }
