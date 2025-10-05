@@ -1,10 +1,11 @@
 use std::fs::File;
+use std::io::stdout;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use csv::{ReaderBuilder, Trim};
 
-use crate::tx::Transaction;
+use crate::{account::Account, tx::Transaction};
 
 pub struct CsvReader {
     reader: csv::Reader<File>,
@@ -20,11 +21,35 @@ impl CsvReader {
         Ok(CsvReader { reader })
     }
 
-    pub fn read(&mut self) -> Vec<Transaction> {
+    pub fn load_in_memory(&mut self) -> Vec<Transaction> {
         self.reader
             .deserialize()
             .map(|result| result.expect("Failed to deserialize"))
             .collect()
+    }
+}
+
+pub struct CsvWriter {
+    writer: csv::Writer<std::io::Stdout>,
+}
+
+impl CsvWriter {
+    pub fn new() -> Result<Self> {
+        let writer = csv::Writer::from_writer(stdout());
+
+        Ok(CsvWriter { writer })
+    }
+
+    pub fn write(&mut self, record: &Account) -> Result<()> {
+        self.writer
+            .serialize(record)
+            .context("Failed to serialize account record")?;
+        Ok(())
+    }
+
+    pub fn flush(&mut self) -> Result<()> {
+        self.writer.flush().context("Failed to flush writer")?;
+        Ok(())
     }
 }
 
@@ -37,7 +62,7 @@ mod tests {
     #[test]
     fn reads_from_csv_file() -> Result<()> {
         let mut reader = CsvReader::new("fixtures/sample_01.csv")?;
-        let txs: Vec<Transaction> = reader.read();
+        let txs: Vec<Transaction> = reader.load_in_memory();
 
         assert_eq!(txs.len(), 5);
 

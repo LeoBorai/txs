@@ -41,6 +41,21 @@ impl Ledger {
         self.tx_log.iter()
     }
 
+    pub fn accounts_summary(&self) -> Vec<Account> {
+        let accounts: Vec<Account> = self
+            .accounts_iter()
+            .map(|(id, acct)| Account {
+                id: *id,
+                available: acct.available,
+                held: acct.held,
+                locked: acct.locked,
+                total: acct.total,
+            })
+            .collect();
+
+        accounts
+    }
+
     pub fn process_tx(&mut self, tx: Transaction) -> Result<()> {
         match tx.r#type {
             TransactionType::Deposit => self.handle_deposit(tx),
@@ -366,6 +381,7 @@ mod tests {
             (
                 &1,
                 &Account {
+                    id: 1,
                     available: dec!(1.5),
                     held: dec!(0.0),
                     locked: false,
@@ -379,6 +395,7 @@ mod tests {
             (
                 &2,
                 &Account {
+                    id: 2,
                     available: dec!(2.0),
                     held: dec!(0.0),
                     locked: false,
