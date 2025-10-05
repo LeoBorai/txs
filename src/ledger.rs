@@ -176,7 +176,25 @@ impl Ledger {
     #[inline(always)]
     fn handle_chargeback(&mut self, tx: Transaction) -> Result<()> {
         let Some(tx_under_dispute) = self
-            .find_tx(|t| t.id == tx.id && t.client == tx.client)
+            .find_tx(|t| {
+                t.id == tx.id
+                    && t.client == tx.client
+                    && matches!(t.r#type, TransactionType::Dispute)
+            })
+            .cloned()
+        else {
+            return Err(Error::DisputeTxNotFound { tx });
+        };
+
+        let Some(tx_under_dispute) = self
+            .find_tx(|t| {
+                t.id == tx.id
+                    && t.client == tx.client
+                    && matches!(
+                        t.r#type,
+                        TransactionType::Deposit | TransactionType::Withdrawal
+                    )
+            })
             .cloned()
         else {
             return Err(Error::TransactionNotFound { tx });
@@ -303,40 +321,42 @@ mod tests {
     fn process_tx_two_accounts() -> Result<()> {
         let mut ledger = Ledger::new();
 
-        let _ = ledger.process_tx(Transaction {
+        ledger.process_tx(Transaction {
             amount: Some(dec!(1.0)),
             r#type: TransactionType::Deposit,
             client: 1,
             id: 1,
-        });
+        })?;
 
-        let _ = ledger.process_tx(Transaction {
+        ledger.process_tx(Transaction {
             amount: Some(dec!(2.0)),
             r#type: TransactionType::Deposit,
             client: 2,
             id: 2,
-        });
+        })?;
 
-        let _ = ledger.process_tx(Transaction {
+        ledger.process_tx(Transaction {
             amount: Some(dec!(2.0)),
             r#type: TransactionType::Deposit,
             client: 1,
             id: 3,
-        });
+        })?;
 
-        let _ = ledger.process_tx(Transaction {
+        ledger.process_tx(Transaction {
             amount: Some(dec!(1.5)),
             r#type: TransactionType::Withdrawal,
             client: 1,
             id: 4,
-        });
+        })?;
 
-        let _ = ledger.process_tx(Transaction {
+        let result = ledger.process_tx(Transaction {
             amount: Some(dec!(3.0)),
             r#type: TransactionType::Withdrawal,
             client: 2,
             id: 5,
         });
+
+        assert!(result.is_err(), "should fail due to insufficient funds");
 
         let mut accounts = ledger.accounts_iter().collect::<Vec<_>>();
         accounts.sort_by(|(a_id, _), (b_id, _)| a_id.cmp(b_id));
@@ -376,24 +396,25 @@ mod tests {
     fn process_tx_dispute() -> Result<()> {
         let mut ledger = Ledger::new();
 
-        let _ = ledger.process_tx(Transaction {
+        ledger.process_tx(Transaction {
             amount: Some(dec!(10.0)),
             r#type: TransactionType::Deposit,
             client: 1,
             id: 1,
-        });
+        })?;
 
-        let _ = ledger.process_tx(Transaction {
+        ledger.process_tx(Transaction {
             amount: None,
             r#type: TransactionType::Dispute,
             client: 1,
             id: 1,
-        });
+        })?;
 
         let account = ledger
             .get_account(&1)
             .expect("expected account for client.");
 
+        assert!(!account.locked);
         assert_eq!(account.available, dec!(0.0));
         assert_eq!(account.held, dec!(10.0));
         assert_eq!(account.total, dec!(10.0));
@@ -406,12 +427,12 @@ mod tests {
     fn process_tx_dispute_tx_not_found() -> Result<()> {
         let mut ledger = Ledger::new();
 
-        let _ = ledger.process_tx(Transaction {
+        ledger.process_tx(Transaction {
             amount: Some(dec!(10.0)),
             r#type: TransactionType::Deposit,
             client: 1,
             id: 1,
-        });
+        })?;
 
         let tx = Transaction {
             amount: None,
@@ -428,6 +449,7 @@ mod tests {
             .get_account(&1)
             .expect("expected account for client.");
 
+        assert!(!account.locked);
         assert_eq!(account.held, dec!(0.0));
         assert_eq!(account.available, dec!(10.0));
         assert_eq!(account.total, dec!(10.0));
@@ -465,6 +487,7 @@ mod tests {
             .get_account(&1)
             .expect("expected account for client.");
 
+        assert!(!account.locked);
         assert_eq!(account.available, dec!(10.0));
         assert_eq!(account.held, dec!(0.0));
         assert_eq!(account.total, dec!(10.0));
@@ -474,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn process_tx_dispute_chargeback() -> Result<()> {
+    fn process_tx_dispute_deposit_chargeback() -> Result<()> {
         let mut ledger = Ledger::new();
 
         ledger.process_tx(Transaction {
@@ -485,24 +508,17 @@ mod tests {
         })?;
 
         ledger.process_tx(Transaction {
-            amount: Some(dec!(100.0)),
-            r#type: TransactionType::Withdrawal,
-            client: 1,
-            id: 2,
-        })?;
-
-        ledger.process_tx(Transaction {
             amount: None,
             r#type: TransactionType::Dispute,
             client: 1,
-            id: 2,
+            id: 1,
         })?;
 
         ledger.process_tx(Transaction {
             amount: None,
             r#type: TransactionType::Chargeback,
             client: 1,
-            id: 2,
+            id: 1,
         })?;
 
         let account = ledger
@@ -513,7 +529,7 @@ mod tests {
         assert_eq!(account.available, dec!(0.0));
         assert_eq!(account.held, dec!(0.0));
         assert_eq!(account.total, dec!(0.0));
-        assert_eq!(ledger.tx_log.len(), 4);
+        assert_eq!(ledger.tx_log.len(), 3);
 
         Ok(())
     }
