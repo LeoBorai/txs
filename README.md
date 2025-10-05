@@ -21,3 +21,10 @@ The output CSV will contain account summaries, such output is
 streamed to stdout,
 
 > Some examples are available in the `fixtures` directory.
+
+## Features
+
+- Supports deposits, withdrawals, disputes, resolutions, and chargebacks.
+- Handles multiple clients and transactions.
+- Ensures account integrity with locked accounts after chargebacks.
+- Stream based CSV read processing for memory efficiency.

@@ -1,9 +1,11 @@
-use std::fs::File;
 use std::io::stdout;
 use std::path::Path;
+use std::task::{Context, Poll};
+use std::{fs::File, pin::Pin};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use csv::{ReaderBuilder, Trim};
+use futures::Stream;
 
 use crate::{account::Account, tx::Transaction};
 
@@ -16,16 +18,22 @@ impl CsvReader {
         let reader = ReaderBuilder::new()
             .trim(Trim::All)
             .from_path(path)
-            .context("Failed to build CSV reader")?;
+            .expect("Failed to build CSV reader");
 
         Ok(CsvReader { reader })
     }
+}
 
-    pub fn load_in_memory(&mut self) -> Vec<Transaction> {
-        self.reader
-            .deserialize()
-            .map(|result| result.expect("Failed to deserialize"))
-            .collect()
+impl Stream for CsvReader {
+    type Item = Result<Transaction>;
+
+    fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut iter = self.get_mut().reader.deserialize();
+
+        match iter.next() {
+            Some(result) => Poll::Ready(Some(result.map_err(|e| e.into()))),
+            None => Poll::Ready(None),
+        }
     }
 }
 
@@ -43,12 +51,12 @@ impl CsvWriter {
     pub fn write(&mut self, record: &Account) -> Result<()> {
         self.writer
             .serialize(record)
-            .context("Failed to serialize account record")?;
+            .expect("Failed to serialize account record");
         Ok(())
     }
 
     pub fn flush(&mut self) -> Result<()> {
-        self.writer.flush().context("Failed to flush writer")?;
+        self.writer.flush().expect("Failed to flush writer");
         Ok(())
     }
 }
@@ -56,13 +64,15 @@ impl CsvWriter {
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
+    use futures::TryStreamExt;
 
     use super::*;
 
-    #[test]
-    fn reads_from_csv_file() -> Result<()> {
-        let mut reader = CsvReader::new("fixtures/sample_01.csv")?;
-        let txs: Vec<Transaction> = reader.load_in_memory();
+    #[tokio::test]
+    async fn reads_from_csv_file() -> Result<()> {
+        let reader = CsvReader::new("fixtures/sample_01.csv")?;
+        let txs = reader.into_stream();
+        let txs: Vec<_> = txs.try_collect().await?;
 
         assert_eq!(txs.len(), 5);
 
