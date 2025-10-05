@@ -1,9 +1,11 @@
 use rust_decimal::Decimal;
+use serde::Deserialize;
 
 use crate::error::{Error, Result};
 use crate::{ClientId, TransactionId};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
 pub enum TransactionType {
     Deposit,
     Withdrawal,
@@ -12,11 +14,13 @@ pub enum TransactionType {
     Chargeback,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct Transaction {
     pub client: ClientId,
     pub r#type: TransactionType,
+    #[serde(rename = "tx")]
     pub id: TransactionId,
+    #[serde(default)]
     pub amount: Option<Decimal>,
 }
 
