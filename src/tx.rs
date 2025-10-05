@@ -2,7 +2,7 @@ use rust_decimal::Decimal;
 
 use crate::{ClientId, TransactionId};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Transaction {
     Deposit {
         amount: Decimal,
@@ -18,6 +18,10 @@ pub enum Transaction {
         client: ClientId,
         tx: TransactionId,
     },
+    Resolve {
+        client: ClientId,
+        tx: TransactionId,
+    },
 }
 
 impl Transaction {
@@ -26,6 +30,16 @@ impl Transaction {
             Transaction::Deposit { tx, .. } => *tx,
             Transaction::Withdrawal { tx, .. } => *tx,
             Transaction::Dispute { tx, .. } => *tx,
+            Transaction::Resolve { tx, .. } => *tx,
+        }
+    }
+
+    pub fn client_id(&self) -> ClientId {
+        match self {
+            Transaction::Deposit { client, .. } => *client,
+            Transaction::Withdrawal { client, .. } => *client,
+            Transaction::Dispute { client, .. } => *client,
+            Transaction::Resolve { client, .. } => *client,
         }
     }
 }

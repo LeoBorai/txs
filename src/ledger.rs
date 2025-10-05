@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use thiserror::Error;
 
@@ -22,14 +22,14 @@ pub enum LedgerError {
 
 pub struct Ledger {
     accounts: HashMap<ClientId, Account>,
-    tx_log: HashMap<TransactionId, Transaction>,
+    tx_log: HashSet<Transaction>,
 }
 
 impl Ledger {
     pub fn new() -> Self {
         Self {
             accounts: HashMap::new(),
-            tx_log: HashMap::new(),
+            tx_log: HashSet::new(),
         }
     }
 
@@ -37,40 +37,47 @@ impl Ledger {
         self.accounts.get(client_id)
     }
 
-    pub fn get_tx(&self, tx_id: &TransactionId) -> Option<&Transaction> {
-        self.tx_log.get(tx_id)
+    pub fn get_tx(&self, tx: &Transaction) -> Option<&Transaction> {
+        self.tx_log.iter().find(|t| *t == tx)
+    }
+
+    pub fn find_tx<P>(&self, p: P) -> Option<&Transaction>
+    where
+        P: Fn(&&Transaction) -> bool,
+    {
+        self.tx_log.iter().find(p)
     }
 
     pub fn accounts_iter(&self) -> impl Iterator<Item = (&ClientId, &Account)> {
         self.accounts.iter()
     }
 
-    pub fn tx_log_iter(&self) -> impl Iterator<Item = (&TransactionId, &Transaction)> {
+    pub fn tx_log_iter(&self) -> impl Iterator<Item = &Transaction> {
         self.tx_log.iter()
     }
 
-    pub fn process_tx(&mut self, tx: &Transaction) -> Result<()> {
+    pub fn process_tx(&mut self, tx: Transaction) -> Result<()> {
         match tx {
             Transaction::Deposit { client, amount, .. } => {
-                let account = self.accounts.entry(*client).or_default();
+                let account = self.accounts.entry(client).or_default();
 
-                account.available += *amount;
-                account.total += *amount;
+                account.available += amount;
+                account.total += amount;
 
-                self.tx_log.insert(tx.id(), tx.clone());
+                self.tx_log.insert(tx);
 
                 Ok(())
             }
             Transaction::Withdrawal { client, amount, .. } => {
-                let Some(account) = self.accounts.get_mut(client) else {
+                let Some(account) = self.accounts.get_mut(&client) else {
                     return Err(LedgerError::AccountNotFound { tx: tx.id() });
                 };
 
-                if account.available >= *amount {
-                    account.available -= *amount;
-                    account.total -= *amount;
+                if account.available >= amount {
+                    account.available -= amount;
+                    account.total -= amount;
 
-                    self.tx_log.insert(tx.id(), tx.clone());
+                    self.tx_log.insert(tx);
 
                     return Ok(());
                 }
@@ -78,19 +85,30 @@ impl Ledger {
                 Err(LedgerError::InsufficientFunds { tx: tx.id() })
             }
             Transaction::Dispute { client, tx: tx_id } => {
-                let Some(account) = self.accounts.get_mut(client) else {
-                    return Err(LedgerError::AccountNotFound { tx: *tx_id });
+                // use `cloned` to avoid lifetime issues with mutable borrow
+                let Some(target_tx) = self
+                    .find_tx(|tx| {
+                        tx.id() == tx_id
+                            && tx.client_id() == client
+                            && matches!(
+                                tx,
+                                Transaction::Deposit { .. } | Transaction::Withdrawal { .. }
+                            )
+                    })
+                    .cloned()
+                else {
+                    return Err(LedgerError::TransactionNotFound { tx: tx_id });
                 };
 
-                let Some(target_tx) = self.tx_log.get(tx_id) else {
-                    return Err(LedgerError::TransactionNotFound { tx: *tx_id });
+                let Some(account) = self.accounts.get_mut(&client) else {
+                    return Err(LedgerError::AccountNotFound { tx: tx_id });
                 };
 
                 let amount_disputed = match target_tx {
-                    Transaction::Deposit { amount, .. } => *amount,
-                    Transaction::Withdrawal { amount, .. } => *amount,
+                    Transaction::Deposit { amount, .. } => amount,
+                    Transaction::Withdrawal { amount, .. } => amount,
                     _ => {
-                        return Err(LedgerError::InvalidTransactionForDispute { tx: *tx_id });
+                        return Err(LedgerError::InvalidTransactionForDispute { tx: tx_id });
                     }
                 };
 
@@ -98,8 +116,10 @@ impl Ledger {
                     account.available -= amount_disputed;
                     account.held += amount_disputed;
                 } else {
-                    return Err(LedgerError::InsufficientFunds { tx: *tx_id });
+                    return Err(LedgerError::InsufficientFunds { tx: tx_id });
                 }
+
+                self.tx_log.insert(tx);
 
                 Ok(())
             }
@@ -126,7 +146,7 @@ mod tests {
     fn process_tx_deposit() -> Result<()> {
         let mut ledger = Ledger::new();
 
-        ledger.process_tx(&Transaction::Deposit {
+        ledger.process_tx(Transaction::Deposit {
             amount: dec!(100.0),
             client: 1,
             tx: 1,
@@ -146,13 +166,13 @@ mod tests {
     fn process_tx_withdrawal_handles_insufficient_funds() -> Result<()> {
         let mut ledger = Ledger::new();
 
-        ledger.process_tx(&Transaction::Deposit {
+        ledger.process_tx(Transaction::Deposit {
             amount: dec!(2.0),
             client: 2,
             tx: 1,
         })?;
 
-        let result = ledger.process_tx(&Transaction::Withdrawal {
+        let result = ledger.process_tx(Transaction::Withdrawal {
             amount: dec!(3.0),
             client: 2,
             tx: 2,
@@ -178,31 +198,31 @@ mod tests {
     fn process_tx_two_accounts() -> Result<()> {
         let mut ledger = Ledger::new();
 
-        let _ = ledger.process_tx(&Transaction::Deposit {
+        let _ = ledger.process_tx(Transaction::Deposit {
             amount: dec!(1.0),
             client: 1,
             tx: 1,
         });
 
-        let _ = ledger.process_tx(&Transaction::Deposit {
+        let _ = ledger.process_tx(Transaction::Deposit {
             amount: dec!(2.0),
             client: 2,
             tx: 2,
         });
 
-        let _ = ledger.process_tx(&Transaction::Deposit {
+        let _ = ledger.process_tx(Transaction::Deposit {
             amount: dec!(2.0),
             client: 1,
             tx: 3,
         });
 
-        let _ = ledger.process_tx(&Transaction::Withdrawal {
+        let _ = ledger.process_tx(Transaction::Withdrawal {
             amount: dec!(1.5),
             client: 1,
             tx: 4,
         });
 
-        let _ = ledger.process_tx(&Transaction::Withdrawal {
+        let _ = ledger.process_tx(Transaction::Withdrawal {
             amount: dec!(3.0),
             client: 2,
             tx: 5,
@@ -246,13 +266,13 @@ mod tests {
     fn process_tx_dispute() -> Result<()> {
         let mut ledger = Ledger::new();
 
-        let _ = ledger.process_tx(&Transaction::Deposit {
+        let _ = ledger.process_tx(Transaction::Deposit {
             amount: dec!(10.0),
             client: 1,
             tx: 1,
         });
 
-        let _ = ledger.process_tx(&Transaction::Dispute { client: 1, tx: 1 });
+        let _ = ledger.process_tx(Transaction::Dispute { client: 1, tx: 1 });
 
         let account = ledger
             .get_account(&1)
@@ -261,7 +281,7 @@ mod tests {
         assert_eq!(account.available, dec!(0.0));
         assert_eq!(account.held, dec!(10.0));
         assert_eq!(account.total, dec!(10.0));
-        assert_eq!(ledger.tx_log.len(), 1);
+        assert_eq!(ledger.tx_log.len(), 2);
 
         Ok(())
     }
@@ -270,13 +290,13 @@ mod tests {
     fn process_tx_dispute_tx_not_found() -> Result<()> {
         let mut ledger = Ledger::new();
 
-        let _ = ledger.process_tx(&Transaction::Deposit {
+        let _ = ledger.process_tx(Transaction::Deposit {
             amount: dec!(10.0),
             client: 1,
             tx: 1,
         });
 
-        let result = ledger.process_tx(&Transaction::Dispute { client: 1, tx: 3 });
+        let result = ledger.process_tx(Transaction::Dispute { client: 1, tx: 3 });
 
         assert!(result.is_err());
         assert!(matches!(
