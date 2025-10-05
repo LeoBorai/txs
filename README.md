@@ -19,3 +19,5 @@ cargo r -- <input.csv> > output.csv
 
 The output CSV will contain account summaries, such output is
 streamed to stdout,
+
+> Some examples are available in the `fixtures` directory.
