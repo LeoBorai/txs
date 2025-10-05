@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
+use rust_decimal::Decimal;
+
 use crate::ClientId;
 use crate::account::Account;
 use crate::error::{Error, Result};
@@ -64,6 +66,10 @@ impl Ledger {
 
         let amount = tx.amount()?;
 
+        if amount <= Decimal::ZERO {
+            return Err(Error::NegativeAmount { tx });
+        }
+
         account.available += amount;
         account.total += amount;
 
@@ -84,6 +90,10 @@ impl Ledger {
 
         let amount = tx.amount()?;
 
+        if amount <= Decimal::ZERO {
+            return Err(Error::NegativeAmount { tx });
+        }
+
         if account.available >= amount {
             account.available -= amount;
             account.total -= amount;
@@ -99,7 +109,11 @@ impl Ledger {
     #[inline(always)]
     fn handle_dispute(&mut self, tx: Transaction) -> Result<()> {
         let Some(tx_under_dispute) = self
-            .find_tx(|t| t.id == tx.id && t.client == tx.client)
+            .find_tx(|t| {
+                t.id == tx.id
+                    && t.client == tx.client
+                    && matches!(t.r#type, TransactionType::Deposit)
+            })
             .cloned()
         else {
             return Err(Error::TransactionNotFound { tx });
@@ -144,10 +158,7 @@ impl Ledger {
             .find_tx(|t| {
                 t.id == tx.id
                     && t.client == tx.client
-                    && matches!(
-                        t.r#type,
-                        TransactionType::Deposit | TransactionType::Withdrawal
-                    )
+                    && matches!(t.r#type, TransactionType::Deposit)
             })
             .cloned()
         else {
@@ -193,10 +204,7 @@ impl Ledger {
             .find_tx(|t| {
                 t.id == tx.id
                     && t.client == tx.client
-                    && matches!(
-                        t.r#type,
-                        TransactionType::Deposit | TransactionType::Withdrawal
-                    )
+                    && matches!(t.r#type, TransactionType::Deposit)
             })
             .cloned()
         else {

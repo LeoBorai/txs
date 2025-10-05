@@ -28,4 +28,10 @@ streamed to stdout,
 - Handles multiple clients and transactions.
 - Ensures account integrity with locked accounts after chargebacks.
 - Stream based CSV read processing for memory efficiency.
+- Previously processed transactions are cached for dispute handling.
+- Only `Deposit` transactions can be disputed. Withdrawals will result in `TransactionNotFound` to avoid negative balances.
+
+## Error Handling
+
 - Use tracing to store error and warning logs into a `error.log` file.
+- Transactions with errors are skipped, and processing continues.

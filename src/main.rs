@@ -42,7 +42,6 @@ async fn main() -> Result<()> {
 
     let csv_reader = CsvReader::new(input_path)?;
     let mut csv_stream = csv_reader.into_stream();
-
     let mut ledger = Ledger::new();
 
     while let Some(mb_tx) = csv_stream.next().await {

@@ -20,4 +20,6 @@ pub enum Error {
     IncosistentHeldFunds { tx: Transaction },
     #[error("Domestic transaction is missing amount invalid: {tx:?}")]
     DomesticTransactionMissingAmount { tx: Transaction },
+    #[error("Negative transaction amount: {tx:?}")]
+    NegativeAmount { tx: Transaction },
 }
