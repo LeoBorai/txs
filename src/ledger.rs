@@ -70,211 +70,202 @@ impl Ledger {
 
     pub fn process_tx(&mut self, tx: Transaction) -> Result<()> {
         match tx {
-            Transaction::Deposit(DomesticTransaction { amount, client, .. }) => {
-                let account = self.accounts.entry(client).or_default();
-
-                if account.locked {
-                    return Err(LedgerError::LockedAccount {
-                        client_id: client,
-                        tx,
-                    });
-                }
-
-                account.available += amount;
-                account.total += amount;
-
-                self.tx_log.insert(tx);
-
-                Ok(())
-            }
-            Transaction::Withdrawal(DomesticTransaction { amount, client, .. }) => {
-                let Some(account) = self.accounts.get_mut(&client) else {
-                    return Err(LedgerError::AccountNotFound { tx });
-                };
-
-                if account.locked {
-                    return Err(LedgerError::LockedAccount {
-                        client_id: client,
-                        tx,
-                    });
-                }
-
-                if account.available >= amount {
-                    account.available -= amount;
-                    account.total -= amount;
-
-                    self.tx_log.insert(tx);
-
-                    return Ok(());
-                }
-
-                Err(LedgerError::InsufficientFunds { tx })
-            }
-            Transaction::Dispute(SupportTransaction { client, tx: tx_id }) => {
-                // use `cloned` to avoid lifetime issues with mutable borrow
-                let Some(target_tx) = self
-                    .find_tx(|tx| {
-                        tx.id() == tx_id
-                            && tx.client_id() == client
-                            && matches!(
-                                tx,
-                                Transaction::Deposit { .. } | Transaction::Withdrawal { .. }
-                            )
-                    })
-                    .cloned()
-                else {
-                    return Err(LedgerError::TransactionNotFound { tx });
-                };
-
-                let amount_disputed = match target_tx {
-                    Transaction::Deposit(DomesticTransaction { amount, .. }) => amount,
-                    Transaction::Withdrawal(DomesticTransaction { amount, .. }) => amount,
-                    _ => {
-                        return Err(LedgerError::InvalidTransactionForDispute { tx });
-                    }
-                };
-
-                let Some(account) = self.accounts.get_mut(&client) else {
-                    return Err(LedgerError::AccountNotFound { tx });
-                };
-
-                if account.locked {
-                    return Err(LedgerError::LockedAccount {
-                        client_id: client,
-                        tx,
-                    });
-                }
-
-                if account.available >= amount_disputed {
-                    account.available -= amount_disputed;
-                    account.held += amount_disputed;
-                } else {
-                    return Err(LedgerError::InsufficientFunds { tx });
-                }
-
-                self.tx_log.insert(tx);
-
-                Ok(())
-            }
-            Transaction::Resolve(SupportTransaction {
-                client,
-                tx: tx_under_dispute_id,
-            }) => {
-                // check if the tx is under dispute
-                if self
-                    .find_tx(|tx| {
-                        tx.id() == tx_under_dispute_id
-                            && tx.client_id() == client
-                            && matches!(tx, Transaction::Dispute { .. })
-                    })
-                    .is_none()
-                {
-                    return Err(LedgerError::DisputeTxNotFound { tx });
-                }
-
-                let Some(tx_under_dispute) = self
-                    .find_tx(|tx| {
-                        tx.id() == tx_under_dispute_id
-                            && tx.client_id() == client
-                            && matches!(
-                                tx,
-                                Transaction::Deposit { .. } | Transaction::Withdrawal { .. }
-                            )
-                    })
-                    .cloned()
-                else {
-                    return Err(LedgerError::TransactionNotFound { tx });
-                };
-
-                // with both, dispute tx and actual tx found, proceed to resolve
-                let Some(account) = self.accounts.get_mut(&client) else {
-                    return Err(LedgerError::AccountNotFound { tx });
-                };
-
-                if account.locked {
-                    return Err(LedgerError::LockedAccount {
-                        client_id: client,
-                        tx,
-                    });
-                }
-
-                let amount_resolved = match tx_under_dispute {
-                    Transaction::Deposit(DomesticTransaction { amount, .. }) => amount,
-                    Transaction::Withdrawal(DomesticTransaction { amount, .. }) => amount,
-                    _ => {
-                        return Err(LedgerError::InvalidTransactionForDispute { tx });
-                    }
-                };
-
-                if account.held >= amount_resolved {
-                    account.held -= amount_resolved;
-                    account.available += amount_resolved;
-                } else {
-                    return Err(LedgerError::InsufficientFunds { tx });
-                }
-
-                self.tx_log.insert(tx);
-
-                Ok(())
-            }
-            Transaction::Chargeback(SupportTransaction {
-                client,
-                tx: tx_under_dispute_id,
-            }) => {
-                if self
-                    .find_tx(|tx| {
-                        tx.id() == tx_under_dispute_id
-                            && tx.client_id() == client
-                            && matches!(tx, Transaction::Dispute { .. })
-                    })
-                    .is_none()
-                {
-                    return Err(LedgerError::DisputeTxNotFound { tx });
-                }
-
-                let Some(tx_under_dispute) = self
-                    .find_tx(|tx| {
-                        tx.id() == tx_under_dispute_id
-                            && tx.client_id() == client
-                            && matches!(tx, Transaction::Withdrawal { .. })
-                    })
-                    .cloned()
-                else {
-                    return Err(LedgerError::TransactionNotFound { tx });
-                };
-
-                let Some(account) = self.accounts.get_mut(&client) else {
-                    return Err(LedgerError::AccountNotFound { tx });
-                };
-
-                if account.locked {
-                    return Err(LedgerError::LockedAccount {
-                        client_id: client,
-                        tx,
-                    });
-                }
-
-                let amount_chargeback = match tx_under_dispute {
-                    Transaction::Withdrawal(DomesticTransaction { amount, .. }) => amount,
-                    _ => {
-                        return Err(LedgerError::InvalidTransactionForDispute { tx });
-                    }
-                };
-
-                if account.held >= amount_chargeback {
-                    account.held -= amount_chargeback;
-                    account.total -= amount_chargeback;
-                    account.locked = true;
-                } else {
-                    return Err(LedgerError::IncosistentHeldFunds {
-                        client_id: client,
-                        tx,
-                    });
-                }
-
-                Ok(())
-            }
+            Transaction::Deposit(domestic_tx) => self.handle_deposit(domestic_tx),
+            Transaction::Withdrawal(domestic_tx) => self.handle_withdrawal(domestic_tx),
+            Transaction::Dispute(support_tx) => self.handle_dispute(support_tx),
+            Transaction::Resolve(support_tx) => self.handle_resolve(support_tx),
+            Transaction::Chargeback(support_tx) => self.handle_chargeback(support_tx),
         }
+    }
+
+    fn handle_deposit(&mut self, domestic_tx: DomesticTransaction) -> Result<()> {
+        let account = self.accounts.entry(domestic_tx.client).or_default();
+
+        if account.locked {
+            return Err(LedgerError::LockedAccount {
+                client_id: domestic_tx.client,
+                tx: Transaction::Deposit(domestic_tx),
+            });
+        }
+
+        account.available += domestic_tx.amount;
+        account.total += domestic_tx.amount;
+
+        self.tx_log.insert(Transaction::Deposit(domestic_tx));
+
+        Ok(())
+    }
+
+    fn handle_withdrawal(&mut self, domestic_tx: DomesticTransaction) -> Result<()> {
+        let Some(account) = self.accounts.get_mut(&domestic_tx.client) else {
+            return Err(LedgerError::AccountNotFound {
+                tx: Transaction::Withdrawal(domestic_tx),
+            });
+        };
+
+        if account.locked {
+            return Err(LedgerError::LockedAccount {
+                client_id: domestic_tx.client,
+                tx: Transaction::Withdrawal(domestic_tx),
+            });
+        }
+
+        if account.available >= domestic_tx.amount {
+            account.available -= domestic_tx.amount;
+            account.total -= domestic_tx.amount;
+
+            self.tx_log.insert(Transaction::Withdrawal(domestic_tx));
+
+            return Ok(());
+        }
+
+        Err(LedgerError::InsufficientFunds {
+            tx: Transaction::Withdrawal(domestic_tx),
+        })
+    }
+
+    fn handle_dispute(&mut self, support_tx: SupportTransaction) -> Result<()> {
+        let Some(tx_under_dispute) = self
+            .find_tx(|t| t.id() == support_tx.tx && t.client_id() == support_tx.client)
+            .cloned()
+        else {
+            return Err(LedgerError::TransactionNotFound {
+                tx: Transaction::Dispute(support_tx),
+            });
+        };
+
+        let Some(account) = self.accounts.get_mut(&support_tx.client) else {
+            return Err(LedgerError::AccountNotFound {
+                tx: Transaction::Dispute(support_tx),
+            });
+        };
+
+        if account.locked {
+            return Err(LedgerError::LockedAccount {
+                client_id: support_tx.client,
+                tx: Transaction::Dispute(support_tx),
+            });
+        }
+
+        let amount_disputed = match tx_under_dispute {
+            Transaction::Deposit(DomesticTransaction { amount, .. }) => amount,
+            Transaction::Withdrawal(DomesticTransaction { amount, .. }) => amount,
+            _ => {
+                return Err(LedgerError::InvalidTransactionForDispute {
+                    tx: Transaction::Dispute(support_tx),
+                });
+            }
+        };
+
+        if account.available >= amount_disputed {
+            account.available -= amount_disputed;
+            account.held += amount_disputed;
+        } else {
+            return Err(LedgerError::InsufficientFunds {
+                tx: Transaction::Dispute(support_tx),
+            });
+        }
+
+        self.tx_log.insert(Transaction::Dispute(support_tx));
+
+        Ok(())
+    }
+
+    fn handle_resolve(&mut self, support_tx: SupportTransaction) -> Result<()> {
+        let Some(tx_under_dispute) = self
+            .find_tx(|t| t.id() == support_tx.tx && t.client_id() == support_tx.client)
+            .cloned()
+        else {
+            return Err(LedgerError::TransactionNotFound {
+                tx: Transaction::Resolve(support_tx),
+            });
+        };
+
+        let Some(account) = self.accounts.get_mut(&support_tx.client) else {
+            return Err(LedgerError::AccountNotFound {
+                tx: Transaction::Resolve(support_tx),
+            });
+        };
+
+        if account.locked {
+            return Err(LedgerError::LockedAccount {
+                client_id: support_tx.client,
+                tx: Transaction::Resolve(support_tx),
+            });
+        }
+
+        let amount_resolved = match tx_under_dispute {
+            Transaction::Deposit(DomesticTransaction { amount, .. }) => amount,
+            Transaction::Withdrawal(DomesticTransaction { amount, .. }) => amount,
+            _ => {
+                return Err(LedgerError::InvalidTransactionForDispute {
+                    tx: Transaction::Resolve(support_tx),
+                });
+            }
+        };
+
+        if account.held >= amount_resolved {
+            account.held -= amount_resolved;
+            account.available += amount_resolved;
+        } else {
+            return Err(LedgerError::IncosistentHeldFunds {
+                client_id: support_tx.client,
+                tx: Transaction::Resolve(support_tx),
+            });
+        }
+
+        self.tx_log.insert(Transaction::Resolve(support_tx));
+
+        Ok(())
+    }
+
+    fn handle_chargeback(&mut self, support_tx: SupportTransaction) -> Result<()> {
+        let Some(tx_under_dispute) = self
+            .find_tx(|t| t.id() == support_tx.tx && t.client_id() == support_tx.client)
+            .cloned()
+        else {
+            return Err(LedgerError::TransactionNotFound {
+                tx: Transaction::Chargeback(support_tx),
+            });
+        };
+
+        let Some(account) = self.accounts.get_mut(&support_tx.client) else {
+            return Err(LedgerError::AccountNotFound {
+                tx: Transaction::Chargeback(support_tx),
+            });
+        };
+
+        if account.locked {
+            return Err(LedgerError::LockedAccount {
+                client_id: support_tx.client,
+                tx: Transaction::Chargeback(support_tx),
+            });
+        }
+
+        let amount_chargeback = match tx_under_dispute {
+            Transaction::Deposit(DomesticTransaction { amount, .. }) => amount,
+            Transaction::Withdrawal(DomesticTransaction { amount, .. }) => amount,
+            _ => {
+                return Err(LedgerError::InvalidTransactionForDispute {
+                    tx: Transaction::Chargeback(support_tx),
+                });
+            }
+        };
+
+        if account.held >= amount_chargeback {
+            account.held -= amount_chargeback;
+            account.total -= amount_chargeback;
+            account.locked = true;
+        } else {
+            return Err(LedgerError::IncosistentHeldFunds {
+                client_id: support_tx.client,
+                tx: Transaction::Chargeback(support_tx),
+            });
+        }
+
+        self.tx_log.insert(Transaction::Chargeback(support_tx));
+
+        Ok(())
     }
 }
 
