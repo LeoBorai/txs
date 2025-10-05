@@ -45,6 +45,10 @@ impl Ledger {
         self.accounts.iter()
     }
 
+    pub fn tx_log_iter(&self) -> impl Iterator<Item = (&TransactionId, &Transaction)> {
+        self.tx_log.iter()
+    }
+
     pub fn process_tx(&mut self, tx: &Transaction) -> Result<()> {
         match tx {
             Transaction::Deposit { client, amount, .. } => {
@@ -73,20 +77,20 @@ impl Ledger {
 
                 Err(LedgerError::InsufficientFunds { tx: tx.id() })
             }
-            Transaction::Dispute { client, tx } => {
+            Transaction::Dispute { client, tx: tx_id } => {
                 let Some(account) = self.accounts.get_mut(client) else {
-                    return Err(LedgerError::AccountNotFound { tx: *tx });
+                    return Err(LedgerError::AccountNotFound { tx: *tx_id });
                 };
 
-                let Some(target_tx) = self.tx_log.get(tx) else {
-                    return Err(LedgerError::TransactionNotFound { tx: *tx });
+                let Some(target_tx) = self.tx_log.get(tx_id) else {
+                    return Err(LedgerError::TransactionNotFound { tx: *tx_id });
                 };
 
                 let amount_disputed = match target_tx {
                     Transaction::Deposit { amount, .. } => *amount,
                     Transaction::Withdrawal { amount, .. } => *amount,
                     _ => {
-                        return Err(LedgerError::InvalidTransactionForDispute { tx: *tx });
+                        return Err(LedgerError::InvalidTransactionForDispute { tx: *tx_id });
                     }
                 };
 
@@ -94,8 +98,10 @@ impl Ledger {
                     account.available -= amount_disputed;
                     account.held += amount_disputed;
                 } else {
-                    return Err(LedgerError::InsufficientFunds { tx: *tx });
+                    return Err(LedgerError::InsufficientFunds { tx: *tx_id });
                 }
+
+                self.tx_log.insert(tx.id(), tx.clone());
 
                 Ok(())
             }
@@ -133,6 +139,7 @@ mod tests {
             .expect("expected account for client.");
 
         assert_eq!(account.available, dec!(100.0));
+        assert_eq!(ledger.tx_log.len(), 1);
 
         Ok(())
     }
@@ -164,6 +171,7 @@ mod tests {
             .expect("expected account for client.");
 
         assert_eq!(account.available, dec!(2.0));
+        assert_eq!(ledger.tx_log.len(), 1);
 
         Ok(())
     }
@@ -231,6 +239,8 @@ mod tests {
             )
         );
 
+        assert_eq!(ledger.tx_log.len(), 4);
+
         Ok(())
     }
 
@@ -253,6 +263,37 @@ mod tests {
         assert_eq!(account.available, dec!(0.0));
         assert_eq!(account.held, dec!(10.0));
         assert_eq!(account.total, dec!(10.0));
+        assert_eq!(ledger.tx_log.len(), 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn process_tx_dispute_tx_not_found() -> Result<()> {
+        let mut ledger = Ledger::new();
+
+        let _ = ledger.process_tx(&Transaction::Deposit {
+            amount: dec!(10.0),
+            client: 1,
+            tx: 1,
+        });
+
+        let result = ledger.process_tx(&Transaction::Dispute { client: 1, tx: 3 });
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(LedgerError::TransactionNotFound { tx: 3 })
+        ));
+
+        let account = ledger
+            .get_account(&1)
+            .expect("expected account for client.");
+
+        assert_eq!(account.held, dec!(0.0));
+        assert_eq!(account.available, dec!(10.0));
+        assert_eq!(account.total, dec!(10.0));
+        assert_eq!(ledger.tx_log.len(), 1);
 
         Ok(())
     }
