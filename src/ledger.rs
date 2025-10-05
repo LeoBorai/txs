@@ -1,36 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use thiserror::Error;
-
 use crate::ClientId;
 use crate::account::Account;
-use crate::tx::{DomesticTransaction, SupportTransaction, Transaction};
-
-pub type Result<T> = std::result::Result<T, LedgerError>;
-
-#[derive(Debug, Error)]
-pub enum LedgerError {
-    #[error("Account not found for client: {tx:?}")]
-    AccountNotFound { tx: Transaction },
-    #[error("Insufficient funds to perform transaction: {tx:?}")]
-    InsufficientFunds { tx: Transaction },
-    #[error("Transaction not found: {tx:?}")]
-    TransactionNotFound { tx: Transaction },
-    #[error("Invalid Transaction for Dispute: {tx:?}")]
-    InvalidTransactionForDispute { tx: Transaction },
-    #[error("Dispute Transaction not found: {tx:?}. No dispute in progress.")]
-    DisputeTxNotFound { tx: Transaction },
-    #[error("Account {client_id}, is locked and cannot process transaction: {tx:?}")]
-    LockedAccount {
-        client_id: ClientId,
-        tx: Transaction,
-    },
-    #[error("Account {client_id}, has inconsistent held funds: {tx:?}")]
-    IncosistentHeldFunds {
-        client_id: ClientId,
-        tx: Transaction,
-    },
-}
+use crate::error::{Error, Result};
+use crate::tx::{Transaction, TransactionType};
 
 pub struct Ledger {
     accounts: HashMap<ClientId, Account>,
@@ -69,206 +42,165 @@ impl Ledger {
     }
 
     pub fn process_tx(&mut self, tx: Transaction) -> Result<()> {
-        match tx {
-            Transaction::Deposit(domestic_tx) => self.handle_deposit(domestic_tx),
-            Transaction::Withdrawal(domestic_tx) => self.handle_withdrawal(domestic_tx),
-            Transaction::Dispute(support_tx) => self.handle_dispute(support_tx),
-            Transaction::Resolve(support_tx) => self.handle_resolve(support_tx),
-            Transaction::Chargeback(support_tx) => self.handle_chargeback(support_tx),
+        match tx.r#type {
+            TransactionType::Deposit => self.handle_deposit(tx),
+            TransactionType::Withdrawal => self.handle_withdrawal(tx),
+            TransactionType::Dispute => self.handle_dispute(tx),
+            TransactionType::Resolve => self.handle_resolve(tx),
+            TransactionType::Chargeback => self.handle_chargeback(tx),
         }
     }
 
     #[inline(always)]
-    fn handle_deposit(&mut self, domestic_tx: DomesticTransaction) -> Result<()> {
-        let account = self.accounts.entry(domestic_tx.client).or_default();
+    fn handle_deposit(&mut self, tx: Transaction) -> Result<()> {
+        let account = self.accounts.entry(tx.client).or_default();
 
         if account.locked {
-            return Err(LedgerError::LockedAccount {
-                client_id: domestic_tx.client,
-                tx: Transaction::Deposit(domestic_tx),
-            });
+            return Err(Error::LockedAccount { tx });
         }
 
-        account.available += domestic_tx.amount;
-        account.total += domestic_tx.amount;
+        let amount = tx.amount()?;
 
-        self.tx_log.insert(Transaction::Deposit(domestic_tx));
+        account.available += amount;
+        account.total += amount;
+
+        self.tx_log.insert(tx);
 
         Ok(())
     }
 
     #[inline(always)]
-    fn handle_withdrawal(&mut self, domestic_tx: DomesticTransaction) -> Result<()> {
-        let Some(account) = self.accounts.get_mut(&domestic_tx.client) else {
-            return Err(LedgerError::AccountNotFound {
-                tx: Transaction::Withdrawal(domestic_tx),
-            });
+    fn handle_withdrawal(&mut self, tx: Transaction) -> Result<()> {
+        let Some(account) = self.accounts.get_mut(&tx.client) else {
+            return Err(Error::AccountNotFound { tx });
         };
 
         if account.locked {
-            return Err(LedgerError::LockedAccount {
-                client_id: domestic_tx.client,
-                tx: Transaction::Withdrawal(domestic_tx),
-            });
+            return Err(Error::LockedAccount { tx });
         }
 
-        if account.available >= domestic_tx.amount {
-            account.available -= domestic_tx.amount;
-            account.total -= domestic_tx.amount;
+        let amount = tx.amount()?;
 
-            self.tx_log.insert(Transaction::Withdrawal(domestic_tx));
+        if account.available >= amount {
+            account.available -= amount;
+            account.total -= amount;
+
+            self.tx_log.insert(tx);
 
             return Ok(());
         }
 
-        Err(LedgerError::InsufficientFunds {
-            tx: Transaction::Withdrawal(domestic_tx),
-        })
+        Err(Error::InsufficientFunds { tx })
     }
 
     #[inline(always)]
-    fn handle_dispute(&mut self, support_tx: SupportTransaction) -> Result<()> {
+    fn handle_dispute(&mut self, tx: Transaction) -> Result<()> {
         let Some(tx_under_dispute) = self
-            .find_tx(|t| t.id() == support_tx.tx && t.client_id() == support_tx.client)
+            .find_tx(|t| t.id == tx.id && t.client == tx.client)
             .cloned()
         else {
-            return Err(LedgerError::TransactionNotFound {
-                tx: Transaction::Dispute(support_tx),
-            });
+            return Err(Error::TransactionNotFound { tx });
         };
 
-        let Some(account) = self.accounts.get_mut(&support_tx.client) else {
-            return Err(LedgerError::AccountNotFound {
-                tx: Transaction::Dispute(support_tx),
-            });
+        let Some(account) = self.accounts.get_mut(&tx.client) else {
+            return Err(Error::AccountNotFound { tx });
         };
 
         if account.locked {
-            return Err(LedgerError::LockedAccount {
-                client_id: support_tx.client,
-                tx: Transaction::Dispute(support_tx),
-            });
+            return Err(Error::LockedAccount { tx });
         }
 
-        let amount_disputed = match tx_under_dispute {
-            Transaction::Deposit(DomesticTransaction { amount, .. }) => amount,
-            Transaction::Withdrawal(DomesticTransaction { amount, .. }) => amount,
-            _ => {
-                return Err(LedgerError::InvalidTransactionForDispute {
-                    tx: Transaction::Dispute(support_tx),
-                });
-            }
-        };
+        let amount_disputed = tx_under_dispute.amount()?;
 
         if account.available >= amount_disputed {
             account.available -= amount_disputed;
             account.held += amount_disputed;
         } else {
-            return Err(LedgerError::InsufficientFunds {
-                tx: Transaction::Dispute(support_tx),
-            });
+            return Err(Error::InsufficientFunds { tx });
         }
 
-        self.tx_log.insert(Transaction::Dispute(support_tx));
+        self.tx_log.insert(tx);
 
         Ok(())
     }
 
     #[inline(always)]
-    fn handle_resolve(&mut self, support_tx: SupportTransaction) -> Result<()> {
+    fn handle_resolve(&mut self, tx: Transaction) -> Result<()> {
+        if self
+            .find_tx(|t| {
+                t.id == tx.id
+                    && t.client == tx.client
+                    && matches!(t.r#type, TransactionType::Dispute)
+            })
+            .is_none()
+        {
+            return Err(Error::DisputeTxNotFound { tx });
+        }
+
         let Some(tx_under_dispute) = self
-            .find_tx(|t| t.id() == support_tx.tx && t.client_id() == support_tx.client)
+            .find_tx(|t| {
+                t.id == tx.id
+                    && t.client == tx.client
+                    && matches!(
+                        t.r#type,
+                        TransactionType::Deposit | TransactionType::Withdrawal
+                    )
+            })
             .cloned()
         else {
-            return Err(LedgerError::TransactionNotFound {
-                tx: Transaction::Resolve(support_tx),
-            });
+            return Err(Error::TransactionNotFound { tx });
         };
 
-        let Some(account) = self.accounts.get_mut(&support_tx.client) else {
-            return Err(LedgerError::AccountNotFound {
-                tx: Transaction::Resolve(support_tx),
-            });
+        let Some(account) = self.accounts.get_mut(&tx.client) else {
+            return Err(Error::AccountNotFound { tx });
         };
 
         if account.locked {
-            return Err(LedgerError::LockedAccount {
-                client_id: support_tx.client,
-                tx: Transaction::Resolve(support_tx),
-            });
+            return Err(Error::LockedAccount { tx });
         }
 
-        let amount_resolved = match tx_under_dispute {
-            Transaction::Deposit(DomesticTransaction { amount, .. }) => amount,
-            Transaction::Withdrawal(DomesticTransaction { amount, .. }) => amount,
-            _ => {
-                return Err(LedgerError::InvalidTransactionForDispute {
-                    tx: Transaction::Resolve(support_tx),
-                });
-            }
-        };
+        let amount_resolved = tx_under_dispute.amount()?;
 
         if account.held >= amount_resolved {
             account.held -= amount_resolved;
             account.available += amount_resolved;
         } else {
-            return Err(LedgerError::IncosistentHeldFunds {
-                client_id: support_tx.client,
-                tx: Transaction::Resolve(support_tx),
-            });
+            return Err(Error::IncosistentHeldFunds { tx });
         }
 
-        self.tx_log.insert(Transaction::Resolve(support_tx));
+        self.tx_log.insert(tx);
 
         Ok(())
     }
 
     #[inline(always)]
-    fn handle_chargeback(&mut self, support_tx: SupportTransaction) -> Result<()> {
+    fn handle_chargeback(&mut self, tx: Transaction) -> Result<()> {
         let Some(tx_under_dispute) = self
-            .find_tx(|t| t.id() == support_tx.tx && t.client_id() == support_tx.client)
+            .find_tx(|t| t.id == tx.id && t.client == tx.client)
             .cloned()
         else {
-            return Err(LedgerError::TransactionNotFound {
-                tx: Transaction::Chargeback(support_tx),
-            });
+            return Err(Error::TransactionNotFound { tx });
         };
 
-        let Some(account) = self.accounts.get_mut(&support_tx.client) else {
-            return Err(LedgerError::AccountNotFound {
-                tx: Transaction::Chargeback(support_tx),
-            });
+        let Some(account) = self.accounts.get_mut(&tx.client) else {
+            return Err(Error::AccountNotFound { tx });
         };
 
         if account.locked {
-            return Err(LedgerError::LockedAccount {
-                client_id: support_tx.client,
-                tx: Transaction::Chargeback(support_tx),
-            });
+            return Err(Error::LockedAccount { tx });
         }
 
-        let amount_chargeback = match tx_under_dispute {
-            Transaction::Deposit(DomesticTransaction { amount, .. }) => amount,
-            Transaction::Withdrawal(DomesticTransaction { amount, .. }) => amount,
-            _ => {
-                return Err(LedgerError::InvalidTransactionForDispute {
-                    tx: Transaction::Chargeback(support_tx),
-                });
-            }
-        };
+        let amount_chargeback = tx_under_dispute.amount()?;
 
         if account.held >= amount_chargeback {
             account.held -= amount_chargeback;
             account.total -= amount_chargeback;
             account.locked = true;
         } else {
-            return Err(LedgerError::IncosistentHeldFunds {
-                client_id: support_tx.client,
-                tx: Transaction::Chargeback(support_tx),
-            });
+            return Err(Error::IncosistentHeldFunds { tx });
         }
 
-        self.tx_log.insert(Transaction::Chargeback(support_tx));
+        self.tx_log.insert(tx);
 
         Ok(())
     }
@@ -290,11 +222,12 @@ mod tests {
     fn process_tx_deposit() -> Result<()> {
         let mut ledger = Ledger::new();
 
-        ledger.process_tx(Transaction::Deposit(DomesticTransaction {
-            amount: dec!(100.0),
+        ledger.process_tx(Transaction {
+            amount: Some(dec!(100.0)),
+            r#type: TransactionType::Deposit,
             client: 1,
-            tx: 1,
-        }))?;
+            id: 1,
+        })?;
 
         let account = ledger
             .get_account(&1)
@@ -310,17 +243,19 @@ mod tests {
     fn process_tx_deposit_withdrawal() -> Result<()> {
         let mut ledger = Ledger::new();
 
-        ledger.process_tx(Transaction::Deposit(DomesticTransaction {
-            amount: dec!(100.0),
+        ledger.process_tx(Transaction {
+            amount: Some(dec!(100.0)),
+            r#type: TransactionType::Deposit,
             client: 1,
-            tx: 1,
-        }))?;
+            id: 1,
+        })?;
 
-        ledger.process_tx(Transaction::Withdrawal(DomesticTransaction {
-            amount: dec!(100.0),
+        ledger.process_tx(Transaction {
+            amount: Some(dec!(100.0)),
+            r#type: TransactionType::Withdrawal,
             client: 1,
-            tx: 2,
-        }))?;
+            id: 2,
+        })?;
 
         let account = ledger
             .get_account(&1)
@@ -336,24 +271,23 @@ mod tests {
     fn process_tx_withdrawal_handles_insufficient_funds() -> Result<()> {
         let mut ledger = Ledger::new();
 
-        ledger.process_tx(Transaction::Deposit(DomesticTransaction {
-            amount: dec!(2.0),
+        ledger.process_tx(Transaction {
+            amount: Some(dec!(2.0)),
+            r#type: TransactionType::Deposit,
             client: 2,
-            tx: 1,
-        }))?;
+            id: 1,
+        })?;
 
-        let tx = Transaction::Withdrawal(DomesticTransaction {
-            amount: dec!(3.0),
+        let tx = Transaction {
+            amount: Some(dec!(3.0)),
+            r#type: TransactionType::Withdrawal,
             client: 2,
-            tx: 2,
-        });
+            id: 2,
+        };
         let result = ledger.process_tx(tx.clone());
 
         assert!(result.is_err());
-        assert!(matches!(
-            result,
-            Err(LedgerError::InsufficientFunds { tx: _ })
-        ));
+        assert!(matches!(result, Err(Error::InsufficientFunds { tx: _ })));
 
         let account = ledger
             .get_account(&2)
@@ -369,35 +303,40 @@ mod tests {
     fn process_tx_two_accounts() -> Result<()> {
         let mut ledger = Ledger::new();
 
-        let _ = ledger.process_tx(Transaction::Deposit(DomesticTransaction {
-            amount: dec!(1.0),
+        let _ = ledger.process_tx(Transaction {
+            amount: Some(dec!(1.0)),
+            r#type: TransactionType::Deposit,
             client: 1,
-            tx: 1,
-        }));
+            id: 1,
+        });
 
-        let _ = ledger.process_tx(Transaction::Deposit(DomesticTransaction {
-            amount: dec!(2.0),
+        let _ = ledger.process_tx(Transaction {
+            amount: Some(dec!(2.0)),
+            r#type: TransactionType::Deposit,
             client: 2,
-            tx: 2,
-        }));
+            id: 2,
+        });
 
-        let _ = ledger.process_tx(Transaction::Deposit(DomesticTransaction {
-            amount: dec!(2.0),
+        let _ = ledger.process_tx(Transaction {
+            amount: Some(dec!(2.0)),
+            r#type: TransactionType::Deposit,
             client: 1,
-            tx: 3,
-        }));
+            id: 3,
+        });
 
-        let _ = ledger.process_tx(Transaction::Withdrawal(DomesticTransaction {
-            amount: dec!(1.5),
+        let _ = ledger.process_tx(Transaction {
+            amount: Some(dec!(1.5)),
+            r#type: TransactionType::Withdrawal,
             client: 1,
-            tx: 4,
-        }));
+            id: 4,
+        });
 
-        let _ = ledger.process_tx(Transaction::Withdrawal(DomesticTransaction {
-            amount: dec!(3.0),
+        let _ = ledger.process_tx(Transaction {
+            amount: Some(dec!(3.0)),
+            r#type: TransactionType::Withdrawal,
             client: 2,
-            tx: 5,
-        }));
+            id: 5,
+        });
 
         let mut accounts = ledger.accounts_iter().collect::<Vec<_>>();
         accounts.sort_by(|(a_id, _), (b_id, _)| a_id.cmp(b_id));
@@ -437,16 +376,19 @@ mod tests {
     fn process_tx_dispute() -> Result<()> {
         let mut ledger = Ledger::new();
 
-        let _ = ledger.process_tx(Transaction::Deposit(DomesticTransaction {
-            amount: dec!(10.0),
+        let _ = ledger.process_tx(Transaction {
+            amount: Some(dec!(10.0)),
+            r#type: TransactionType::Deposit,
             client: 1,
-            tx: 1,
-        }));
+            id: 1,
+        });
 
-        let _ = ledger.process_tx(Transaction::Dispute(SupportTransaction {
+        let _ = ledger.process_tx(Transaction {
+            amount: None,
+            r#type: TransactionType::Dispute,
             client: 1,
-            tx: 1,
-        }));
+            id: 1,
+        });
 
         let account = ledger
             .get_account(&1)
@@ -464,20 +406,23 @@ mod tests {
     fn process_tx_dispute_tx_not_found() -> Result<()> {
         let mut ledger = Ledger::new();
 
-        let _ = ledger.process_tx(Transaction::Deposit(DomesticTransaction {
-            amount: dec!(10.0),
+        let _ = ledger.process_tx(Transaction {
+            amount: Some(dec!(10.0)),
+            r#type: TransactionType::Deposit,
             client: 1,
-            tx: 1,
-        }));
+            id: 1,
+        });
 
-        let tx = Transaction::Dispute(SupportTransaction { client: 1, tx: 3 });
+        let tx = Transaction {
+            amount: None,
+            r#type: TransactionType::Dispute,
+            client: 1,
+            id: 3,
+        };
         let result = ledger.process_tx(tx.clone());
 
         assert!(result.is_err());
-        assert!(matches!(
-            result,
-            Err(LedgerError::TransactionNotFound { tx: _ })
-        ));
+        assert!(matches!(result, Err(Error::TransactionNotFound { tx: _ })));
 
         let account = ledger
             .get_account(&1)
@@ -495,21 +440,26 @@ mod tests {
     fn process_tx_dispute_resolve() -> Result<()> {
         let mut ledger = Ledger::new();
 
-        let _ = ledger.process_tx(Transaction::Deposit(DomesticTransaction {
-            amount: dec!(10.0),
+        ledger.process_tx(Transaction {
+            amount: Some(dec!(10.0)),
+            r#type: TransactionType::Deposit,
             client: 1,
-            tx: 1,
-        }));
+            id: 1,
+        })?;
 
-        let _ = ledger.process_tx(Transaction::Dispute(SupportTransaction {
+        ledger.process_tx(Transaction {
+            amount: None,
+            r#type: TransactionType::Dispute,
             client: 1,
-            tx: 1,
-        }));
+            id: 1,
+        })?;
 
-        let _ = ledger.process_tx(Transaction::Resolve(SupportTransaction {
+        ledger.process_tx(Transaction {
+            amount: None,
+            r#type: TransactionType::Resolve,
             client: 1,
-            tx: 1,
-        }));
+            id: 1,
+        })?;
 
         let account = ledger
             .get_account(&1)
@@ -527,27 +477,33 @@ mod tests {
     fn process_tx_dispute_chargeback() -> Result<()> {
         let mut ledger = Ledger::new();
 
-        ledger.process_tx(Transaction::Deposit(DomesticTransaction {
-            amount: dec!(100.0),
+        ledger.process_tx(Transaction {
+            amount: Some(dec!(100.0)),
+            r#type: TransactionType::Deposit,
             client: 1,
-            tx: 1,
-        }))?;
+            id: 1,
+        })?;
 
-        ledger.process_tx(Transaction::Withdrawal(DomesticTransaction {
-            amount: dec!(100.0),
+        ledger.process_tx(Transaction {
+            amount: Some(dec!(100.0)),
+            r#type: TransactionType::Withdrawal,
             client: 1,
-            tx: 2,
-        }))?;
+            id: 2,
+        })?;
 
-        ledger.process_tx(Transaction::Dispute(SupportTransaction {
+        ledger.process_tx(Transaction {
+            amount: None,
+            r#type: TransactionType::Dispute,
             client: 1,
-            tx: 2,
-        }))?;
+            id: 2,
+        })?;
 
-        ledger.process_tx(Transaction::Chargeback(SupportTransaction {
+        ledger.process_tx(Transaction {
+            amount: None,
+            r#type: TransactionType::Chargeback,
             client: 1,
-            tx: 2,
-        }))?;
+            id: 2,
+        })?;
 
         let account = ledger
             .get_account(&1)

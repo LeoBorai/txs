@@ -1,4 +1,5 @@
 mod account;
+mod error;
 mod ledger;
 mod tx;
 
