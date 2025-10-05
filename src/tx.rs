@@ -14,6 +14,10 @@ pub enum Transaction {
         client: ClientId,
         tx: TransactionId,
     },
+    Dispute {
+        client: ClientId,
+        tx: TransactionId,
+    },
 }
 
 impl Transaction {
@@ -21,6 +25,7 @@ impl Transaction {
         match self {
             Transaction::Deposit { tx, .. } => *tx,
             Transaction::Withdrawal { tx, .. } => *tx,
+            Transaction::Dispute { tx, .. } => *tx,
         }
     }
 }
