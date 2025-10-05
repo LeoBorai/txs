@@ -18,14 +18,6 @@ impl Ledger {
         }
     }
 
-    pub fn get_account(&self, client_id: &ClientId) -> Option<&Account> {
-        self.accounts.get(client_id)
-    }
-
-    pub fn get_tx(&self, tx: &Transaction) -> Option<&Transaction> {
-        self.tx_log.iter().find(|t| *t == tx)
-    }
-
     pub fn find_tx<P>(&self, p: P) -> Option<&Transaction>
     where
         P: Fn(&&Transaction) -> bool,
@@ -35,10 +27,6 @@ impl Ledger {
 
     pub fn accounts_iter(&self) -> impl Iterator<Item = (&ClientId, &Account)> {
         self.accounts.iter()
-    }
-
-    pub fn tx_log_iter(&self) -> impl Iterator<Item = &Transaction> {
-        self.tx_log.iter()
     }
 
     pub fn accounts_summary(&self) -> Vec<Account> {
@@ -190,14 +178,14 @@ impl Ledger {
 
     #[inline(always)]
     fn handle_chargeback(&mut self, tx: Transaction) -> Result<()> {
-        let Some(tx_under_dispute) = self
+        if self
             .find_tx(|t| {
                 t.id == tx.id
                     && t.client == tx.client
                     && matches!(t.r#type, TransactionType::Dispute)
             })
-            .cloned()
-        else {
+            .is_none()
+        {
             return Err(Error::DisputeTxNotFound { tx });
         };
 
@@ -245,6 +233,10 @@ mod tests {
 
     use super::*;
 
+    pub fn get_account(ledger: &mut Ledger, client_id: ClientId) -> Option<&Account> {
+        ledger.accounts.get(&client_id)
+    }
+
     #[test]
     fn ledger_is_empty_by_default() {
         let ledger = Ledger::new();
@@ -262,9 +254,7 @@ mod tests {
             id: 1,
         })?;
 
-        let account = ledger
-            .get_account(&1)
-            .expect("expected account for client.");
+        let account = get_account(&mut ledger, 1).expect("expected account for client.");
 
         assert_eq!(account.available, dec!(100.0));
         assert_eq!(ledger.tx_log.len(), 1);
@@ -290,9 +280,7 @@ mod tests {
             id: 2,
         })?;
 
-        let account = ledger
-            .get_account(&1)
-            .expect("expected account for client.");
+        let account = get_account(&mut ledger, 1).expect("expected account for client.");
 
         assert_eq!(account.available, dec!(0.0));
         assert_eq!(ledger.tx_log.len(), 2);
@@ -322,9 +310,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(result, Err(Error::InsufficientFunds { tx: _ })));
 
-        let account = ledger
-            .get_account(&2)
-            .expect("expected account for client.");
+        let account = get_account(&mut ledger, 2).expect("expected account for client.");
 
         assert_eq!(account.available, dec!(2.0));
         assert_eq!(ledger.tx_log.len(), 1);
@@ -427,9 +413,7 @@ mod tests {
             id: 1,
         })?;
 
-        let account = ledger
-            .get_account(&1)
-            .expect("expected account for client.");
+        let account = get_account(&mut ledger, 1).expect("expected account for client.");
 
         assert!(!account.locked);
         assert_eq!(account.available, dec!(0.0));
@@ -462,9 +446,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(result, Err(Error::TransactionNotFound { tx: _ })));
 
-        let account = ledger
-            .get_account(&1)
-            .expect("expected account for client.");
+        let account = get_account(&mut ledger, 1).expect("expected account for client.");
 
         assert!(!account.locked);
         assert_eq!(account.held, dec!(0.0));
@@ -500,9 +482,7 @@ mod tests {
             id: 1,
         })?;
 
-        let account = ledger
-            .get_account(&1)
-            .expect("expected account for client.");
+        let account = get_account(&mut ledger, 1).expect("expected account for client.");
 
         assert!(!account.locked);
         assert_eq!(account.available, dec!(10.0));
@@ -538,9 +518,7 @@ mod tests {
             id: 1,
         })?;
 
-        let account = ledger
-            .get_account(&1)
-            .expect("expected account for client.");
+        let account = get_account(&mut ledger, 1).expect("expected account for client.");
 
         assert!(account.locked);
         assert_eq!(account.available, dec!(0.0));

@@ -12,8 +12,6 @@ pub enum Error {
     InsufficientFunds { tx: Transaction },
     #[error("Transaction not found: {tx:?}")]
     TransactionNotFound { tx: Transaction },
-    #[error("Invalid Transaction for Dispute: {tx:?}")]
-    InvalidTransactionForDispute { tx: Transaction },
     #[error("Dispute Transaction not found: {tx:?}. No dispute in progress.")]
     DisputeTxNotFound { tx: Transaction },
     #[error("Account locked. Transaction cannot be pocessed: {tx:?}")]
