@@ -3,13 +3,27 @@ use serde::{Serialize, ser::SerializeStruct};
 
 use crate::ClientId;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+const DECIMAL_PLACES: u32 = 4;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Account {
     pub id: ClientId,
     pub available: Decimal,
     pub held: Decimal,
-    pub locked: bool,
     pub total: Decimal,
+    pub locked: bool,
+}
+
+impl Default for Account {
+    fn default() -> Self {
+        Account {
+            id: 0,
+            available: Decimal::new(0, DECIMAL_PLACES),
+            held: Decimal::new(0, DECIMAL_PLACES),
+            total: Decimal::new(0, DECIMAL_PLACES),
+            locked: false,
+        }
+    }
 }
 
 impl Serialize for Account {
