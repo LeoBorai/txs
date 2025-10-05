@@ -23,5 +23,5 @@ pub enum Error {
     #[error("Negative transaction amount: {tx:?}")]
     NegativeAmount { tx: Transaction },
     #[error("Duplicate Transaction: {tx:?}")]
-    DuplicateTransaction { tx: Transaction }
+    DuplicateTransaction { tx: Transaction },
 }
