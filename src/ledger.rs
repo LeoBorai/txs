@@ -78,6 +78,7 @@ impl Ledger {
         }
     }
 
+    #[inline(always)]
     fn handle_deposit(&mut self, domestic_tx: DomesticTransaction) -> Result<()> {
         let account = self.accounts.entry(domestic_tx.client).or_default();
 
@@ -96,6 +97,7 @@ impl Ledger {
         Ok(())
     }
 
+    #[inline(always)]
     fn handle_withdrawal(&mut self, domestic_tx: DomesticTransaction) -> Result<()> {
         let Some(account) = self.accounts.get_mut(&domestic_tx.client) else {
             return Err(LedgerError::AccountNotFound {
@@ -124,6 +126,7 @@ impl Ledger {
         })
     }
 
+    #[inline(always)]
     fn handle_dispute(&mut self, support_tx: SupportTransaction) -> Result<()> {
         let Some(tx_under_dispute) = self
             .find_tx(|t| t.id() == support_tx.tx && t.client_id() == support_tx.client)
@@ -171,6 +174,7 @@ impl Ledger {
         Ok(())
     }
 
+    #[inline(always)]
     fn handle_resolve(&mut self, support_tx: SupportTransaction) -> Result<()> {
         let Some(tx_under_dispute) = self
             .find_tx(|t| t.id() == support_tx.tx && t.client_id() == support_tx.client)
@@ -219,6 +223,7 @@ impl Ledger {
         Ok(())
     }
 
+    #[inline(always)]
     fn handle_chargeback(&mut self, support_tx: SupportTransaction) -> Result<()> {
         let Some(tx_under_dispute) = self
             .find_tx(|t| t.id() == support_tx.tx && t.client_id() == support_tx.client)
