@@ -101,8 +101,6 @@ impl Ledger {
                     return Err(LedgerError::InsufficientFunds { tx: *tx_id });
                 }
 
-                self.tx_log.insert(tx.id(), tx.clone());
-
                 Ok(())
             }
             _ => {
