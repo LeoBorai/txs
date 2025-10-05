@@ -30,6 +30,7 @@ streamed to stdout,
 - Stream based CSV read processing for memory efficiency.
 - Previously processed transactions are cached for dispute handling.
 - Only `Deposit` transactions can be disputed. Withdrawals will result in `TransactionNotFound` to avoid negative balances.
+- Keeps in-memory transaction log to handle disputes and chargebacks and refuse duplicate transactions.
 
 ## Error Handling
 

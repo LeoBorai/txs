@@ -58,6 +58,10 @@ impl Ledger {
 
     #[inline(always)]
     fn handle_deposit(&mut self, tx: Transaction) -> Result<()> {
+        if self.tx_log.contains(&tx) {
+            return Err(Error::DuplicateTransaction { tx });
+        }
+
         let account = self.accounts.entry(tx.client).or_default();
 
         if account.locked {
@@ -80,6 +84,10 @@ impl Ledger {
 
     #[inline(always)]
     fn handle_withdrawal(&mut self, tx: Transaction) -> Result<()> {
+        if self.tx_log.contains(&tx) {
+            return Err(Error::DuplicateTransaction { tx });
+        }
+
         let Some(account) = self.accounts.get_mut(&tx.client) else {
             return Err(Error::AccountNotFound { tx });
         };
@@ -108,6 +116,10 @@ impl Ledger {
 
     #[inline(always)]
     fn handle_dispute(&mut self, tx: Transaction) -> Result<()> {
+        if self.tx_log.contains(&tx) {
+            return Err(Error::DuplicateTransaction { tx });
+        }
+
         let Some(tx_under_dispute) = self
             .find_tx(|t| {
                 t.id == tx.id
@@ -143,6 +155,10 @@ impl Ledger {
 
     #[inline(always)]
     fn handle_resolve(&mut self, tx: Transaction) -> Result<()> {
+        if self.tx_log.contains(&tx) {
+            return Err(Error::DuplicateTransaction { tx });
+        }
+
         if self
             .find_tx(|t| {
                 t.id == tx.id
@@ -189,6 +205,10 @@ impl Ledger {
 
     #[inline(always)]
     fn handle_chargeback(&mut self, tx: Transaction) -> Result<()> {
+        if self.tx_log.contains(&tx) {
+            return Err(Error::DuplicateTransaction { tx });
+        }
+
         if self
             .find_tx(|t| {
                 t.id == tx.id
@@ -531,6 +551,34 @@ mod tests {
         assert_eq!(account.held, dec!(0.0));
         assert_eq!(account.total, dec!(0.0));
         assert_eq!(ledger.tx_log.len(), 3);
+
+        Ok(())
+    }
+
+    #[test]
+    fn check_duplicate_transaction() -> Result<()> {
+        let mut ledger = Ledger::new();
+
+        let tx = Transaction {
+            amount: Some(dec!(50.0)),
+            r#type: TransactionType::Deposit,
+            client: 1,
+            id: 1,
+        };
+
+        ledger.process_tx(tx.clone())?;
+        let result = ledger.process_tx(tx.clone());
+
+        assert!(result.is_err());
+        assert!(matches!(result, Err(Error::DuplicateTransaction { tx: _ })));
+
+        let account = get_account(&ledger, 1).expect("expected account for client.");
+
+        assert!(!account.locked);
+        assert_eq!(account.available, dec!(50.0));
+        assert_eq!(account.held, dec!(0.0));
+        assert_eq!(account.total, dec!(50.0));
+        assert_eq!(ledger.tx_log.len(), 1);
 
         Ok(())
     }

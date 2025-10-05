@@ -22,4 +22,6 @@ pub enum Error {
     DomesticTransactionMissingAmount { tx: Transaction },
     #[error("Negative transaction amount: {tx:?}")]
     NegativeAmount { tx: Transaction },
+    #[error("Duplicate Transaction: {tx:?}")]
+    DuplicateTransaction { tx: Transaction }
 }
