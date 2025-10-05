@@ -3,4 +3,6 @@
 .DS_Store
 
 *.csv
+*.log
+
 !fixtures/*.csv

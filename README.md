@@ -28,3 +28,4 @@ streamed to stdout,
 - Handles multiple clients and transactions.
 - Ensures account integrity with locked accounts after chargebacks.
 - Stream based CSV read processing for memory efficiency.
+- Use tracing to store error and warning logs into a `error.log` file.

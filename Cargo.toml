@@ -11,6 +11,8 @@ rust_decimal = "1.38"
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2"
 tokio = { version = "1.47", default-features = false, features = ["macros", "rt", "rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
 
 [dev-dependencies]
 rust_decimal_macros = "1.38"
